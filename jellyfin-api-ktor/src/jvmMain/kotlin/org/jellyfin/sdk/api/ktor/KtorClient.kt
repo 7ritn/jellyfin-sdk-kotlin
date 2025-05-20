@@ -1,11 +1,11 @@
 package org.jellyfin.sdk.api.ktor
 
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.*
 import io.ktor.client.call.NoTransformationFoundException
 import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.network.sockets.SocketTimeoutException
 import io.ktor.client.plugins.HttpRequestTimeoutException
-import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.header
 import io.ktor.client.request.request
 import io.ktor.client.request.setBody
@@ -18,6 +18,7 @@ import io.ktor.http.isSuccess
 import io.ktor.util.toMap
 import kotlinx.serialization.SerializationException
 import mu.KotlinLogging
+import okhttp3.OkHttpClient
 import org.jellyfin.sdk.api.client.ApiClient
 import org.jellyfin.sdk.api.client.HttpClientOptions
 import org.jellyfin.sdk.api.client.HttpMethod
@@ -38,7 +39,13 @@ import org.jellyfin.sdk.model.FileInfo
 import java.io.IOException
 import java.net.ConnectException
 import java.net.UnknownHostException
+import java.security.KeyStore
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
+import kotlin.time.toJavaDuration
 import io.ktor.http.HttpMethod as KtorHttpMethod
 
 @Suppress("LongParameterList")
@@ -47,8 +54,9 @@ public class KtorClient(
 	initialAccessToken: String?,
 	initialClientInfo: ClientInfo,
 	initialDeviceInfo: DeviceInfo,
+	initialMtls: KeyStore.PrivateKeyEntry?,
 	override val httpClientOptions: HttpClientOptions,
-	private val socketConnectionFactory: SocketConnectionFactory,
+	private val socketConnectionFactory: SocketConnectionFactory
 ) : ApiClient() {
 	public override var baseUrl: String? = initialBaseUrl
 		private set
@@ -58,27 +66,81 @@ public class KtorClient(
 		private set
 	public override var deviceInfo: DeviceInfo = initialDeviceInfo
 		private set
-
-	private val client: HttpClient = HttpClient {
-		followRedirects = httpClientOptions.followRedirects
-		expectSuccess = false
-
-		install(HttpTimeout) {
-			connectTimeoutMillis = httpClientOptions.connectTimeout.inWholeMilliseconds
-			requestTimeoutMillis = httpClientOptions.requestTimeout.inWholeMilliseconds
-			socketTimeoutMillis = httpClientOptions.socketTimeout.inWholeMilliseconds
+	private var _mtls: KeyStore.PrivateKeyEntry? = initialMtls
+	public override var mtls: KeyStore.PrivateKeyEntry?
+		get() = _mtls
+		private set(value) {
+			_mtls = value
+			resetClient()
 		}
+
+	private val okHttpClient: () -> OkHttpClient = { createOkHttpClient() }
+
+	@Volatile private var _ktorClient: HttpClient = createKtorClient()
+	private val client: HttpClient
+		get() = _ktorClient
+
+	private fun createOkHttpClient(): OkHttpClient =
+		OkHttpClient.Builder()
+			.followRedirects(httpClientOptions.followRedirects)
+			.connectTimeout(httpClientOptions.connectTimeout.toJavaDuration())
+			.callTimeout(httpClientOptions.requestTimeout.toJavaDuration())
+			.readTimeout(httpClientOptions.socketTimeout.toJavaDuration())
+			.writeTimeout(httpClientOptions.socketTimeout.toJavaDuration())
+			.apply { mtls?.let { addMTLS(this, it) } }
+			.build()
+
+	private fun createKtorClient(): HttpClient =
+		HttpClient(OkHttp) {
+			engine { preconfigured = okHttpClient() }
+		}
+
+	private fun resetClient() {
+		_ktorClient = createKtorClient()
 	}
 
 	private val _webSocket = lazy {
 		DefaultSocketApi(this, httpClientOptions.socketReconnectPolicy, socketConnectionFactory)
 	}
 
-	override fun update(baseUrl: String?, accessToken: String?, clientInfo: ClientInfo, deviceInfo: DeviceInfo) {
+	private fun addMTLS(
+		builder: OkHttpClient.Builder,
+		mtls: KeyStore.PrivateKeyEntry
+	) {
+		val keyStore = KeyStore.getInstance("PKCS12")
+		keyStore.load(null, null)
+		keyStore.setKeyEntry(
+			"client",
+			mtls.privateKey,
+			null,
+			mtls.certificateChain
+		)
+
+		val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+		kmf.init(keyStore, null)
+
+		val sslContext = SSLContext.getInstance("TLS").apply {
+			init(kmf.keyManagers, null, null)
+		}
+
+		val trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply {
+			init(null as KeyStore?)
+		}
+
+		val trustManager = trustManagerFactory.trustManagers
+			.filterIsInstance<X509TrustManager>()
+			.firstOrNull()
+			?: return
+
+		builder.sslSocketFactory(sslContext.socketFactory, trustManager)
+	}
+
+	override fun update(baseUrl: String?, accessToken: String?, clientInfo: ClientInfo, deviceInfo: DeviceInfo, mtls: KeyStore.PrivateKeyEntry?) {
 		this.baseUrl = baseUrl
 		this.accessToken = accessToken
 		this.clientInfo = clientInfo
 		this.deviceInfo = deviceInfo
+		this.mtls = mtls
 
 		// Notify websocket only if initialized
 		if (_webSocket.isInitialized()) {

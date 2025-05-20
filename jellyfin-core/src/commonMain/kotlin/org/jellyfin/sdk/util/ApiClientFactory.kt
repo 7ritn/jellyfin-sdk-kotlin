@@ -5,6 +5,7 @@ import org.jellyfin.sdk.api.client.HttpClientOptions
 import org.jellyfin.sdk.api.sockets.SocketConnectionFactory
 import org.jellyfin.sdk.model.ClientInfo
 import org.jellyfin.sdk.model.DeviceInfo
+import java.security.KeyStore
 
 public fun interface ApiClientFactory {
 	@Suppress("LongParameterList")
@@ -13,6 +14,7 @@ public fun interface ApiClientFactory {
 		accessToken: String?,
 		clientInfo: ClientInfo,
 		deviceInfo: DeviceInfo,
+		mtls: KeyStore.PrivateKeyEntry?,
 		httpClientOptions: HttpClientOptions,
 		socketConnectionFactory: SocketConnectionFactory,
 	): ApiClient

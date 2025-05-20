@@ -6,6 +6,7 @@ import org.jellyfin.sdk.api.operations.Api
 import org.jellyfin.sdk.api.sockets.SocketApi
 import org.jellyfin.sdk.model.ClientInfo
 import org.jellyfin.sdk.model.DeviceInfo
+import java.security.KeyStore
 import kotlin.reflect.KClass
 
 public abstract class ApiClient {
@@ -49,6 +50,11 @@ public abstract class ApiClient {
 	public abstract val httpClientOptions: HttpClientOptions
 
 	/**
+	 * Key and CAChain for MTLS
+	 */
+	public abstract val mtls: KeyStore.PrivateKeyEntry?
+
+	/**
 	 * Change the authorization values used in this ApiClient instance.
 	 */
 	public abstract fun update(
@@ -56,6 +62,7 @@ public abstract class ApiClient {
 		accessToken: String? = this.accessToken,
 		clientInfo: ClientInfo = this.clientInfo,
 		deviceInfo: DeviceInfo = this.deviceInfo,
+		mtls: KeyStore.PrivateKeyEntry? = this.mtls
 	)
 
 	/**
